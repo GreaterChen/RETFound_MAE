@@ -23,7 +23,7 @@ def param_groups_lrd(model, weight_decay=0.05, no_weight_decay_list=[], layer_de
     layer_scales = list(layer_decay ** (num_layers - i) for i in range(num_layers + 1))
 
     for n, p in model.named_parameters():
-        if not p.requires_grad:
+        if p.stop_gradient:  # PaddlePaddle使用stop_gradient而不是requires_grad
             continue
 
         # no decay: all 1D parameters and model specific ones

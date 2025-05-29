@@ -7,11 +7,9 @@ import os
 import time
 from pathlib import Path
 
-import torch
-import torch.backends.cudnn as cudnn
-from torch.utils.tensorboard import SummaryWriter
-from timm.models.layers import trunc_normal_
-from timm.data.mixup import Mixup
+import paddle
+import paddle.distributed as dist
+from visualdl import LogWriter
 
 import models_vit as models
 import util.lr_decay as lrd
@@ -20,7 +18,7 @@ from util.datasets import build_dataset
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 from huggingface_hub import hf_hub_download, login
-from engine_finetune import train_one_epoch, evaluate
+from engine_finetune import train_one_epoch, evaluate, Mixup
 
 import warnings
 import faulthandler
@@ -65,7 +63,7 @@ def get_args_parser():
     parser.add_argument('--color_jitter', type=float, default=None, metavar='PCT',
                         help='Color jitter factor (enabled only when not using Auto/RandAug)')
     parser.add_argument('--aa', type=str, default='rand-m9-mstd0.5-inc1', metavar='NAME',
-                        help='Use AutoAugment policy. "v0" or "original". " + "(default: rand-m9-mstd0.5-inc1)'),
+                        help='Use AutoAugment policy. "v0" or "original". (default: rand-m9-mstd0.5-inc1)'),
     parser.add_argument('--smoothing', type=float, default=0.1,
                         help='Label smoothing (default: 0.1)')
 
@@ -149,7 +147,7 @@ def get_args_parser():
 def main(args, criterion):
     if args.resume and not args.eval:
         resume = args.resume
-        checkpoint = torch.load(args.resume, map_location='cpu')
+        checkpoint = paddle.load(args.resume, map_location='cpu')
         print("Load checkpoint from: %s" % args.resume)
         args = checkpoint['args']
         args.resume = resume
@@ -159,14 +157,12 @@ def main(args, criterion):
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
 
-    device = torch.device(args.device)
+    device = paddle.device.set_device(args.device)
 
     # fix the seed for reproducibility
     seed = args.seed + misc.get_rank()
-    torch.manual_seed(seed)
+    paddle.seed(seed)
     np.random.seed(seed)
-
-    cudnn.benchmark = True
 
     if args.model=='RETFound_mae':
         model = models.__dict__[args.model](
@@ -191,7 +187,7 @@ def main(args, criterion):
             filename=f'{args.finetune}.pth',
         )
         
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = paddle.load(checkpoint_path, map_location='cpu')
         print("Load pre-trained checkpoint from: %s" % args.finetune)
         
         if args.model!='RETFound_mae':
@@ -213,9 +209,9 @@ def main(args, criterion):
         interpolate_pos_embed(model, checkpoint_model)
 
         # load pre-trained model
-        msg = model.load_state_dict(checkpoint_model, strict=False)
+        msg = model.set_state_dict(checkpoint_model, strict=False)
 
-        trunc_normal_(model.head.weight, std=2e-5)
+        paddle.nn.initializer.Normal(model.head.weight, std=2e-5)
 
     dataset_train = build_dataset(is_train='train', args=args)
     dataset_val = build_dataset(is_train='val', args=args)
@@ -226,7 +222,7 @@ def main(args, criterion):
         num_tasks = misc.get_world_size()
         global_rank = misc.get_rank()
         if not args.eval:
-            sampler_train = torch.utils.data.DistributedSampler(
+            sampler_train = paddle.io.DistributedSampler(
                 dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
             )
             print("Sampler_train = %s" % str(sampler_train))
@@ -236,31 +232,31 @@ def main(args, criterion):
                         'Warning: Enabling distributed evaluation with an eval dataset not divisible by process number. '
                         'This will slightly alter validation results as extra duplicate entries are added to achieve '
                         'equal num of samples per-process.')
-                sampler_val = torch.utils.data.DistributedSampler(
+                sampler_val = paddle.io.DistributedSampler(
                     dataset_val, num_replicas=num_tasks, rank=global_rank,
                     shuffle=True)  # shuffle=True to reduce monitor bias
             else:
-                sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+                sampler_val = paddle.io.SequentialSampler(dataset_val)
 
         if args.dist_eval:
             if len(dataset_test) % num_tasks != 0:
                 print('Warning: Enabling distributed evaluation with an eval dataset not divisible by process number. '
                       'This will slightly alter validation results as extra duplicate entries are added to achieve '
                       'equal num of samples per-process.')
-            sampler_test = torch.utils.data.DistributedSampler(
+            sampler_test = paddle.io.DistributedSampler(
                 dataset_test, num_replicas=num_tasks, rank=global_rank,
                 shuffle=True)  # shuffle=True to reduce monitor bias
         else:
-            sampler_test = torch.utils.data.SequentialSampler(dataset_test)
+            sampler_test = paddle.io.SequentialSampler(dataset_test)
 
     if global_rank == 0 and args.log_dir is not None and not args.eval:
         os.makedirs(args.log_dir, exist_ok=True)
-        log_writer = SummaryWriter(log_dir=os.path.join(args.log_dir, args.task))
+        log_writer = LogWriter(log_dir=os.path.join(args.log_dir, args.task))
     else:
         log_writer = None
 
     if not args.eval:
-        data_loader_train = torch.utils.data.DataLoader(
+        data_loader_train = paddle.io.DataLoader(
             dataset_train, sampler=sampler_train,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
@@ -270,7 +266,7 @@ def main(args, criterion):
 
         print(f'len of train_set: {len(data_loader_train) * args.batch_size}')
 
-        data_loader_val = torch.utils.data.DataLoader(
+        data_loader_val = paddle.io.DataLoader(
             dataset_val, sampler=sampler_val,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
@@ -278,7 +274,7 @@ def main(args, criterion):
             drop_last=False
         )
 
-    data_loader_test = torch.utils.data.DataLoader(
+    data_loader_test = paddle.io.DataLoader(
         dataset_test, sampler=sampler_test,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
@@ -296,9 +292,9 @@ def main(args, criterion):
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     if args.resume and args.eval:
-        checkpoint = torch.load(args.resume, map_location='cpu')
+        checkpoint = paddle.load(args.resume, map_location='cpu')
         print("Load checkpoint from: %s" % args.resume)
-        model.load_state_dict(checkpoint['model'])
+        model.set_state_dict(checkpoint['model'])
 
     model.to(device)
     model_without_ddp = model
@@ -318,7 +314,7 @@ def main(args, criterion):
     print("effective batch size: %d" % eff_batch_size)
 
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = paddle.nn.DataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
 
     no_weight_decay = model_without_ddp.no_weight_decay() if hasattr(model_without_ddp, 'no_weight_decay') else []
@@ -326,7 +322,7 @@ def main(args, criterion):
                                         no_weight_decay_list=no_weight_decay,
                                         layer_decay=args.layer_decay
                                         )
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
+    optimizer = paddle.optimizer.AdamW(param_groups, lr=args.lr)
     loss_scaler = NativeScaler()
 
     print("criterion = %s" % str(criterion))
@@ -369,8 +365,8 @@ def main(args, criterion):
 
 
         if epoch == (args.epochs - 1):
-            checkpoint = torch.load(os.path.join(args.output_dir, args.task, 'checkpoint-best.pth'), map_location='cpu')
-            model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+            checkpoint = paddle.load(os.path.join(args.output_dir, args.task, 'checkpoint-best.pth'), map_location='cpu')
+            model_without_ddp.set_state_dict(checkpoint['model'], strict=False)
             model.to(device)
             print("Test with the best model, epoch = %d:" % checkpoint['epoch'])
             test_stats, auc_roc = evaluate(data_loader_test, model, device, args, -1, mode='test',
@@ -398,7 +394,7 @@ if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
 
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = paddle.nn.CrossEntropyLoss()
 
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)

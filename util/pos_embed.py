@@ -4,8 +4,7 @@
 # --------------------------------------------------------
 
 import numpy as np
-
-import torch
+import paddle
 
 # --------------------------------------------------------
 # 2D sine-cosine position embedding
@@ -84,9 +83,9 @@ def interpolate_pos_embed(model, checkpoint_model):
             extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
             # only the position tokens are interpolated
             pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
-            pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
-            pos_tokens = torch.nn.functional.interpolate(
+            pos_tokens = pos_tokens.reshape([-1, orig_size, orig_size, embedding_size]).transpose([0, 3, 1, 2])
+            pos_tokens = paddle.nn.functional.interpolate(
                 pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
-            pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
-            new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
+            pos_tokens = pos_tokens.transpose([0, 2, 3, 1]).flatten(1, 2)
+            new_pos_embed = paddle.concat((extra_tokens, pos_tokens), axis=1)
             checkpoint_model['pos_embed'] = new_pos_embed

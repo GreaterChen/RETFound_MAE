@@ -1,13 +1,11 @@
 import os
 import csv
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import paddle
+import paddle.nn as nn
+import paddle.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Iterable, Optional
-from timm.data import Mixup
-from timm.utils import accuracy
 from sklearn.metrics import (
     accuracy_score, roc_auc_score, f1_score, average_precision_score,
     hamming_loss, jaccard_score, recall_score, precision_score, cohen_kappa_score
@@ -16,12 +14,40 @@ from pycm import ConfusionMatrix
 import util.misc as misc
 import util.lr_sched as lr_sched
 
+
+class Mixup:
+    """简单的Mixup实现"""
+    def __init__(self, mixup_alpha=1.0, cutmix_alpha=0.0, prob=1.0, switch_prob=0.5, mode='batch', label_smoothing=0.1, num_classes=1000):
+        self.mixup_alpha = mixup_alpha
+        self.cutmix_alpha = cutmix_alpha
+        self.prob = prob
+        self.switch_prob = switch_prob
+        self.mode = mode
+        self.label_smoothing = label_smoothing
+        self.num_classes = num_classes
+
+    def __call__(self, x, target):
+        if np.random.rand() > self.prob:
+            return x, target
+            
+        if self.mixup_alpha > 0 and np.random.rand() < self.switch_prob:
+            lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
+            batch_size = x.shape[0]
+            rand_index = paddle.randperm(batch_size)
+            
+            mixed_x = lam * x + (1 - lam) * x[rand_index]
+            target_a, target_b = target, target[rand_index]
+            return mixed_x, (target_a, target_b, lam)
+        else:
+            return x, target
+
+
 def train_one_epoch(
-    model: torch.nn.Module,
-    criterion: torch.nn.Module,
+    model: paddle.nn.Layer,
+    criterion: paddle.nn.Layer,
     data_loader: Iterable,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
+    optimizer: paddle.optimizer.Optimizer,
+    device: str,
     epoch: int,
     loss_scaler,
     max_norm: float = 0,
@@ -30,11 +56,11 @@ def train_one_epoch(
     args=None
 ):
     """Train the model for one epoch."""
-    model.train(True)
+    model.train()
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     print_freq, accum_iter = 20, args.accum_iter
-    optimizer.zero_grad()
+    optimizer.clear_grad()
     
     if log_writer:
         print(f'log_dir: {log_writer.log_dir}')
@@ -43,11 +69,13 @@ def train_one_epoch(
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
         
-        samples, targets = samples.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+        samples = paddle.to_tensor(samples) if not isinstance(samples, paddle.Tensor) else samples
+        targets = paddle.to_tensor(targets) if not isinstance(targets, paddle.Tensor) else targets
+        
         if mixup_fn:
             samples, targets = mixup_fn(samples, targets)
         
-        with torch.cuda.amp.autocast():
+        with paddle.amp.auto_cast():
             outputs = model(samples)
             loss = criterion(outputs, targets)
         loss_value = loss.item()
@@ -56,32 +84,36 @@ def train_one_epoch(
         loss_scaler(loss, optimizer, clip_grad=max_norm, parameters=model.parameters(), create_graph=False,
                     update_grad=(data_iter_step + 1) % accum_iter == 0)
         if (data_iter_step + 1) % accum_iter == 0:
-            optimizer.zero_grad()
+            optimizer.clear_grad()
         
-        torch.cuda.synchronize()
         metric_logger.update(loss=loss_value)
         min_lr = 10.
         max_lr = 0.
-        for group in optimizer.param_groups:
-            min_lr = min(min_lr, group["lr"])
-            max_lr = max(max_lr, group["lr"])
+        if hasattr(optimizer, '_learning_rate'):
+            lr = optimizer._learning_rate if hasattr(optimizer._learning_rate, 'get_lr') else optimizer._learning_rate
+            if hasattr(lr, 'get_lr'):
+                max_lr = lr.get_lr()
+                min_lr = lr.get_lr()
+            else:
+                max_lr = lr
+                min_lr = lr
+        else:
+            max_lr = optimizer.get_lr()
+            min_lr = optimizer.get_lr()
 
         metric_logger.update(lr=max_lr)
 
-        loss_value_reduce = misc.all_reduce_mean(loss_value)
         if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
-            """ We use epoch_1000x as the x-axis in tensorboard.
-            This calibrates different curves when batch size changes.
-            """
             epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
-            log_writer.add_scalar('loss/train', loss_value_reduce, epoch_1000x)
+            log_writer.add_scalar('loss/train', loss_value, epoch_1000x)
             log_writer.add_scalar('lr', max_lr, epoch_1000x)
     
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-@torch.no_grad()
+
+@paddle.no_grad()
 def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_writer):
     """Evaluate the model."""
     criterion = nn.CrossEntropyLoss()
@@ -92,57 +124,83 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
     true_onehot, pred_onehot, true_labels, pred_labels, pred_softmax = [], [], [], [], []
     
     for batch in metric_logger.log_every(data_loader, 10, f'{mode}:'):
-        images, target = batch[0].to(device, non_blocking=True), batch[-1].to(device, non_blocking=True)
-        target_onehot = F.one_hot(target.to(torch.int64), num_classes=num_class)
+        images = paddle.to_tensor(batch[0]) if not isinstance(batch[0], paddle.Tensor) else batch[0]
+        target = paddle.to_tensor(batch[-1]) if not isinstance(batch[-1], paddle.Tensor) else batch[-1]
+        target_onehot = F.one_hot(target.cast('int64'), num_classes=num_class)
         
-        with torch.cuda.amp.autocast():
+        with paddle.amp.auto_cast():
             output = model(images)
             loss = criterion(output, target)
-        output_ = nn.Softmax(dim=1)(output)
-        output_label = output_.argmax(dim=1)
-        output_onehot = F.one_hot(output_label.to(torch.int64), num_classes=num_class)
         
+        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
+        metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
+        metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
+        
+        pred_softmax_value = F.softmax(output, axis=-1).cpu().numpy()
+        pred_onehot_value = F.one_hot(paddle.argmax(output, axis=-1), num_classes=num_class).cpu().numpy()
+        
         true_onehot.extend(target_onehot.cpu().numpy())
-        pred_onehot.extend(output_onehot.detach().cpu().numpy())
+        pred_onehot.extend(pred_onehot_value)
         true_labels.extend(target.cpu().numpy())
-        pred_labels.extend(output_label.detach().cpu().numpy())
-        pred_softmax.extend(output_.detach().cpu().numpy())
+        pred_labels.extend(paddle.argmax(output, axis=-1).cpu().numpy())
+        pred_softmax.extend(pred_softmax_value)
     
-    accuracy = accuracy_score(true_labels, pred_labels)
-    hamming = hamming_loss(true_onehot, pred_onehot)
-    jaccard = jaccard_score(true_onehot, pred_onehot, average='macro')
-    average_precision = average_precision_score(true_onehot, pred_softmax, average='macro')
-    kappa = cohen_kappa_score(true_labels, pred_labels)
-    f1 = f1_score(true_onehot, pred_onehot, zero_division=0, average='macro')
-    roc_auc = roc_auc_score(true_onehot, pred_softmax, multi_class='ovr', average='macro')
-    precision = precision_score(true_onehot, pred_onehot, zero_division=0, average='macro')
-    recall = recall_score(true_onehot, pred_onehot, zero_division=0, average='macro')
+    # 计算指标
+    true_onehot = np.array(true_onehot)
+    pred_onehot = np.array(pred_onehot)
+    true_labels = np.array(true_labels)
+    pred_labels = np.array(pred_labels)
+    pred_softmax = np.array(pred_softmax)
     
-    score = (f1 + roc_auc + kappa) / 3
-    if log_writer:
-        for metric_name, value in zip(['accuracy', 'f1', 'roc_auc', 'hamming', 'jaccard', 'precision', 'recall', 'average_precision', 'kappa', 'score'],
-                                       [accuracy, f1, roc_auc, hamming, jaccard, precision, recall, average_precision, kappa, score]):
-            log_writer.add_scalar(f'perf/{metric_name}', value, epoch)
+    # 计算各种指标
+    accuracy_value = accuracy_score(true_labels, pred_labels)
+    f1_macro = f1_score(true_labels, pred_labels, average='macro', zero_division=0)
+    f1_micro = f1_score(true_labels, pred_labels, average='micro', zero_division=0)
+    f1_weighted = f1_score(true_labels, pred_labels, average='weighted', zero_division=0)
     
-    print(f'val loss: {metric_logger.meters["loss"].global_avg}')
-    print(f'Accuracy: {accuracy:.4f}, F1 Score: {f1:.4f}, ROC AUC: {roc_auc:.4f}, Hamming Loss: {hamming:.4f},\n'
-          f' Jaccard Score: {jaccard:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f},\n'
-          f' Average Precision: {average_precision:.4f}, Kappa: {kappa:.4f}, Score: {score:.4f}')
+    try:
+        auc_macro = roc_auc_score(true_onehot, pred_softmax, average='macro', multi_class='ovr')
+        auc_weighted = roc_auc_score(true_onehot, pred_softmax, average='weighted', multi_class='ovr')
+    except:
+        auc_macro = 0.0
+        auc_weighted = 0.0
+    
+    precision_macro = precision_score(true_labels, pred_labels, average='macro', zero_division=0)
+    recall_macro = recall_score(true_labels, pred_labels, average='macro', zero_division=0)
+    
+    # 写入CSV文件
+    csv_file = os.path.join(args.output_dir, args.task, f'{mode}_results.csv')
+    file_exists = os.path.isfile(csv_file)
+    
+    with open(csv_file, 'a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(['Epoch', 'Loss', 'Accuracy', 'F1_Macro', 'F1_Micro', 'F1_Weighted', 
+                           'AUC_Macro', 'AUC_Weighted', 'Precision_Macro', 'Recall_Macro'])
+        writer.writerow([epoch, metric_logger.meters['loss'].global_avg, accuracy_value, 
+                        f1_macro, f1_micro, f1_weighted, auc_macro, auc_weighted, 
+                        precision_macro, recall_macro])
+    
+    print(f'{mode} Results - Accuracy: {accuracy_value:.4f}, F1-Macro: {f1_macro:.4f}, AUC-Macro: {auc_macro:.4f}')
     
     metric_logger.synchronize_between_processes()
-    
-    results_path = os.path.join(args.output_dir, args.task, f'metrics_{mode}.csv')
-    file_exists = os.path.isfile(results_path)
-    with open(results_path, 'a', newline='', encoding='utf8') as cfa:
-        wf = csv.writer(cfa)
-        if not file_exists:
-            wf.writerow(['val_loss', 'accuracy', 'f1', 'roc_auc', 'hamming', 'jaccard', 'precision', 'recall', 'average_precision', 'kappa'])
-        wf.writerow([metric_logger.meters["loss"].global_avg, accuracy, f1, roc_auc, hamming, jaccard, precision, recall, average_precision, kappa])
-    
-    if mode == 'test':
-        cm = ConfusionMatrix(actual_vector=true_labels, predict_vector=pred_labels)
-        cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
-        plt.savefig(os.path.join(args.output_dir, args.task, 'confusion_matrix_test.jpg'), dpi=600, bbox_inches='tight')
-    
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, score
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+
+def accuracy(output, target, topk=(1,)):
+    """计算准确率"""
+    with paddle.no_grad():
+        maxk = max(topk)
+        batch_size = target.shape[0]
+
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        correct = pred.equal(target.reshape([1, -1]).expand_as(pred))
+
+        res = []
+        for k in topk:
+            correct_k = correct[:k].reshape([-1]).cast('float32').sum(0, keepdim=True)
+            res.append(correct_k.multiply(paddle.to_tensor(100.0 / batch_size)))
+        return res

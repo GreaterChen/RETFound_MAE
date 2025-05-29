@@ -10,9 +10,10 @@ import time
 from collections import defaultdict, deque
 from pathlib import Path
 
-import torch
-import torch.distributed as dist
+import paddle
+import paddle.distributed as dist
 from math import inf
+import numpy as np
 
 
 class SmoothedValue(object):
@@ -39,7 +40,9 @@ class SmoothedValue(object):
         """
         if not is_dist_avail_and_initialized():
             return
-        t = torch.tensor([self.count, self.total], dtype=torch.float64, device='cuda')
+        t = paddle.to_tensor([self.count, self.total], dtype='float64')
+        if paddle.device.cuda.device_count() > 0:
+            t = t.cuda()
         dist.barrier()
         dist.all_reduce(t)
         t = t.tolist()
@@ -48,12 +51,12 @@ class SmoothedValue(object):
 
     @property
     def median(self):
-        d = torch.tensor(list(self.deque))
-        return d.median().item()
+        d = paddle.to_tensor(list(self.deque))
+        return paddle.median(d).item()
 
     @property
     def avg(self):
-        d = torch.tensor(list(self.deque), dtype=torch.float32)
+        d = paddle.to_tensor(list(self.deque), dtype='float32')
         return d.mean().item()
 
     @property
@@ -86,7 +89,7 @@ class MetricLogger(object):
         for k, v in kwargs.items():
             if v is None:
                 continue
-            if isinstance(v, torch.Tensor):
+            if isinstance(v, paddle.Tensor):
                 v = v.item()
             assert isinstance(v, (float, int))
             self.meters[k].update(v)
@@ -131,7 +134,7 @@ class MetricLogger(object):
             'time: {time}',
             'data: {data}'
         ]
-        if torch.cuda.is_available():
+        if paddle.device.cuda.device_count() >= 1:
             log_msg.append('max mem: {memory:.0f}')
         log_msg = self.delimiter.join(log_msg)
         MB = 1024.0 * 1024.0
@@ -142,12 +145,12 @@ class MetricLogger(object):
             if i % print_freq == 0 or i == len(iterable) - 1:
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-                if torch.cuda.is_available():
+                if paddle.device.cuda.device_count() >= 1:
                     print(log_msg.format(
                         i, len(iterable), eta=eta_string,
                         meters=str(self),
                         time=str(iter_time), data=str(data_time),
-                        memory=torch.cuda.max_memory_allocated() / MB))
+                        memory=paddle.device.cuda.max_memory_allocated() / MB))
                 else:
                     print(log_msg.format(
                         i, len(iterable), eta=eta_string,
@@ -172,8 +175,7 @@ def setup_for_distributed(is_master):
         force = force or (get_world_size() > 8)
         if is_master or force:
             now = datetime.datetime.now().time()
-            builtin_print('[{}] '.format(now), end='')  # print with time stamp
-            builtin_print(*args, **kwargs)
+            builtin_print('[{}]'.format(now), *args, **kwargs)
 
     builtins.print = print
 
@@ -204,7 +206,7 @@ def is_main_process():
 
 def save_on_master(*args, **kwargs):
     if is_main_process():
-        torch.save(*args, **kwargs)
+        paddle.save(*args, **kwargs)
 
 
 def init_distributed_mode(args):
@@ -216,14 +218,13 @@ def init_distributed_mode(args):
         os.environ['LOCAL_RANK'] = str(args.gpu)
         os.environ['RANK'] = str(args.rank)
         os.environ['WORLD_SIZE'] = str(args.world_size)
-        # ["RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT", "LOCAL_RANK"]
     elif 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
         args.gpu = int(os.environ['LOCAL_RANK'])
     elif 'SLURM_PROCID' in os.environ:
         args.rank = int(os.environ['SLURM_PROCID'])
-        args.gpu = args.rank % torch.cuda.device_count()
+        args.gpu = args.rank % paddle.device.cuda.device_count()
     else:
         print('Not using distributed mode')
         setup_for_distributed(is_master=True)  # hack
@@ -232,13 +233,12 @@ def init_distributed_mode(args):
 
     args.distributed = True
 
-    torch.cuda.set_device(args.gpu)
+    paddle.device.cuda.set_device(args.gpu)
     args.dist_backend = 'nccl'
     print('| distributed init (rank {}): {}, gpu {}'.format(
         args.rank, args.dist_url, args.gpu), flush=True)
-    torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                         world_size=args.world_size, rank=args.rank)
-    torch.distributed.barrier()
+    dist.init_parallel_env()
+    dist.barrier()
     setup_for_distributed(args.rank == 0)
 
 
@@ -246,7 +246,7 @@ class NativeScalerWithGradNormCount:
     state_dict_key = "amp_scaler"
 
     def __init__(self):
-        self._scaler = torch.cuda.amp.GradScaler()
+        self._scaler = paddle.amp.GradScaler()
 
     def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True):
         self._scaler.scale(loss).backward(create_graph=create_graph)
@@ -254,7 +254,7 @@ class NativeScalerWithGradNormCount:
             if clip_grad is not None:
                 assert parameters is not None
                 self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
-                norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
+                norm = paddle.nn.utils.clip_grad_norm_(parameters, clip_grad)
             else:
                 self._scaler.unscale_(optimizer)
                 norm = get_grad_norm_(parameters)
@@ -271,99 +271,77 @@ class NativeScalerWithGradNormCount:
         self._scaler.load_state_dict(state_dict)
 
 
-def get_grad_norm_(parameters, norm_type: float = 2.0) -> torch.Tensor:
-    if isinstance(parameters, torch.Tensor):
+def get_grad_norm_(parameters, norm_type: float = 2.0) -> paddle.Tensor:
+    if isinstance(parameters, paddle.Tensor):
         parameters = [parameters]
     parameters = [p for p in parameters if p.grad is not None]
     norm_type = float(norm_type)
     if len(parameters) == 0:
-        return torch.tensor(0.)
-    device = parameters[0].grad.device
+        return paddle.to_tensor(0.)
+    device = parameters[0].grad.place
     if norm_type == inf:
-        total_norm = max(p.grad.detach().abs().max().to(device) for p in parameters)
+        total_norm = max(p.grad.detach().abs().max() for p in parameters)
     else:
-        total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), norm_type).to(device) for p in parameters]),
-                                norm_type)
+        total_norm = paddle.norm(paddle.stack([paddle.norm(p.grad.detach(), norm_type) for p in parameters]), norm_type)
     return total_norm
 
 
-def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, mode):
+def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
     output_dir = Path(args.output_dir)
     epoch_name = str(epoch)
-    os.makedirs(os.path.join(args.output_dir, args.task), exist_ok=True)
     if loss_scaler is not None:
-        if mode == 'best':
-            checkpoint_paths = [os.path.join(args.output_dir, args.task, 'checkpoint-best.pth')]
-        else:
-            checkpoint_paths = [os.path.join(args.output_dir, args.task, 'checkpoint-latest.pth')]
+        checkpoint_paths = [output_dir / ('checkpoint-%s.pth' % epoch_name)]
         for checkpoint_path in checkpoint_paths:
-            if mode == 'best':
-                to_save = {
-                    'model': model_without_ddp.state_dict(),
-                    'epoch': epoch,
-                    'args': args, }
-            else:
-                if epoch == args.epochs - 1:
-                    to_save = {
-                        'model': model_without_ddp.state_dict(),
-                        'args': args, }
-                else:
-                    to_save = {
-                        'model': model_without_ddp.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'epoch': epoch,
-                        'scaler': loss_scaler.state_dict(),
-                        'args': args,
-                    }
+            to_save = {
+                'model': model_without_ddp.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'epoch': epoch,
+                'scaler': loss_scaler.state_dict(),
+                'args': args,
+            }
 
             save_on_master(to_save, checkpoint_path)
     else:
-        if mode == 'best':
-            to_save = {
-                'model': model_without_ddp.state_dict(),
-                'epoch': epoch, }
-            torch.save(to_save, os.path.join(args.output_dir, args.task, "checkpoint-best.pth"))
-        else:
-            if epoch == args.epochs - 1:
-                to_save = {
-                    'model': model_without_ddp.state_dict(), }
-            else:
-                to_save = {
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'epoch': epoch,
-                    'args': args,
-                }
-            torch.save(to_save, os.path.join(args.output_dir, args.task, "checkpoint-latest.pth"))
+        client_state = {'epoch': epoch}
+        model.save_checkpoint(save_dir=args.output_dir, client_state=client_state)
 
 
 def load_model(args, model_without_ddp, optimizer, loss_scaler):
     if args.resume:
         if args.resume.startswith('https'):
-            checkpoint = torch.hub.load_state_dict_from_url(
+            checkpoint = paddle.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
-        if 'model' in checkpoint:
-            checkpoint_model = checkpoint['model']
-        else:
-            checkpoint_model = checkpoint
-        model_without_ddp.load_state_dict(checkpoint_model, strict=False)
+            checkpoint = paddle.load(args.resume)
+        model_without_ddp.set_state_dict(checkpoint['model'])
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint and not (hasattr(args, 'eval') and args.eval):
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            optimizer.set_state_dict(checkpoint['optimizer'])
             args.start_epoch = checkpoint['epoch'] + 1
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
             print("With optim & sched!")
 
 
-def all_reduce_mean(x):
-    world_size = get_world_size()
-    if world_size > 1:
-        x_reduce = torch.tensor(x).cuda()
-        dist.all_reduce(x_reduce)
-        x_reduce /= world_size
-        return x_reduce.item()
-    else:
-        return x
+def interpolate_pos_embed(model, checkpoint_model):
+    if 'pos_embed' in checkpoint_model:
+        pos_embed_checkpoint = checkpoint_model['pos_embed']
+        embedding_size = pos_embed_checkpoint.shape[-1]
+        num_patches = model.patch_embed.num_patches
+        num_extra_tokens = model.pos_embed.shape[-2] - num_patches
+        # height (== width) for the checkpoint position embedding
+        orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5)
+        # height (== width) for the new position embedding
+        new_size = int(num_patches ** 0.5)
+        # class_token and dist_token are kept unchanged
+        if orig_size != new_size:
+            print("Position interpolate from %dx%d to %dx%d" % (orig_size, orig_size, new_size, new_size))
+            extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
+            # only the position tokens are interpolated
+            pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
+            pos_tokens = pos_tokens.reshape([-1, orig_size, orig_size, embedding_size]).transpose([0, 3, 1, 2])
+            pos_tokens = paddle.nn.functional.interpolate(
+                pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
+            pos_tokens = pos_tokens.transpose([0, 2, 3, 1]).flatten(1, 2)
+            new_pos_embed = paddle.concat((extra_tokens, pos_tokens), axis=1)
+            checkpoint_model['pos_embed'] = new_pos_embed
