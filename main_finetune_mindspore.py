@@ -21,6 +21,7 @@ import util_mindspore.misc as misc
 from util_mindspore.datasets import build_dataset, Mixup
 from util_mindspore.pos_embed import interpolate_pos_embed
 from util_mindspore.misc import NativeScalerWithGradNormCount as NativeScaler
+from util_mindspore.weight_converter import load_pretrained_weights
 from engine_finetune_mindspore import train_one_epoch, evaluate
 
 import warnings
@@ -143,6 +144,10 @@ def get_args_parser():
     parser.add_argument('--norm', default='IMAGENET', type=str, help='Normalization method')
     parser.add_argument('--enhance', action='store_true', default=False, help='Use enhanced data')
     parser.add_argument('--datasets_seed', default=2026, type=int)
+    
+    # Weight conversion parameters
+    parser.add_argument('--weights_cache_dir', default='./weights_cache', type=str,
+                        help='Directory to cache converted MindSpore weights')
 
     return parser
 
@@ -178,27 +183,12 @@ def main(args):
     
     # Load pre-trained weights if specified
     if args.finetune and not args.eval:
-        print(f"Loading pre-trained weights from: {args.finetune}")
-        # Note: In a real implementation, you would download from HuggingFace
-        # For now, we assume the checkpoint is available locally
-        checkpoint_path = f'{args.finetune}.ckpt'
-        
-        if os.path.exists(checkpoint_path):
-            checkpoint = ms.load_checkpoint(checkpoint_path)
-            print("Load pre-trained checkpoint from: %s" % args.finetune)
-            
-            if args.model != 'RETFound_mae':
-                checkpoint_model = checkpoint.get('teacher', checkpoint)
-            else:
-                checkpoint_model = checkpoint.get('model', checkpoint)
-            
-            # Interpolate position embedding if needed
-            interpolate_pos_embed(model, checkpoint_model)
-            
-            # Load state dict
-            ms.load_param_into_net(model, checkpoint_model, strict_load=False)
-        else:
-            print(f"Checkpoint file {checkpoint_path} not found!")
+        print(f"Loading pre-trained weights: {args.finetune}")
+        model = load_pretrained_weights(
+            model, 
+            args.finetune, 
+            cache_dir=args.weights_cache_dir
+        )
 
     model_without_ddp = model
     n_parameters = sum(p.size for p in model.get_parameters() if p.requires_grad)
