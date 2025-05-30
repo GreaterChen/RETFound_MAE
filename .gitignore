@@ -132,3 +132,7 @@ dmypy.json
 .pyre/
 
 IDRiD_data
+
+*.pth
+*.pdparams
+tips.md
