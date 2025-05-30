@@ -136,3 +136,7 @@ IDRiD_data
 *.pth
 *.pdparams
 tips.md
+runs/
+output_dir/
+output_logs/
+data/

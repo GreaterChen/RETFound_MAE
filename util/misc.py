@@ -248,8 +248,8 @@ class NativeScalerWithGradNormCount:
     def __init__(self):
         self._scaler = paddle.amp.GradScaler()
 
-    def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True):
-        self._scaler.scale(loss).backward(create_graph=create_graph)
+    def __call__(self, loss, optimizer, clip_grad=None, parameters=None, update_grad=True):
+        self._scaler.scale(loss).backward()
         if update_grad:
             if clip_grad is not None:
                 assert parameters is not None
@@ -271,7 +271,7 @@ class NativeScalerWithGradNormCount:
         self._scaler.load_state_dict(state_dict)
 
 
-def get_grad_norm_(parameters, norm_type: float = 2.0) -> paddle.Tensor:
+def get_grad_norm_(parameters, norm_type: float = 2.0):
     if isinstance(parameters, paddle.Tensor):
         parameters = [parameters]
     parameters = [p for p in parameters if p.grad is not None]
@@ -300,7 +300,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler):
                 'args': args,
             }
 
-            save_on_master(to_save, checkpoint_path)
+            save_on_master(to_save, str(checkpoint_path))
     else:
         client_state = {'epoch': epoch}
         model.save_checkpoint(save_dir=args.output_dir, client_state=client_state)

@@ -63,14 +63,17 @@ def train_one_epoch(
     optimizer.clear_grad()
     
     if log_writer:
-        print(f'log_dir: {log_writer.log_dir}')
+        print(f'log_dir: {log_writer.logdir}')
     
     for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, f'Epoch: [{epoch}]')):
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
         
-        samples = paddle.to_tensor(samples) if not isinstance(samples, paddle.Tensor) else samples
-        targets = paddle.to_tensor(targets) if not isinstance(targets, paddle.Tensor) else targets
+        # 确保数据是tensor格式
+        if not isinstance(samples, paddle.Tensor):
+            samples = paddle.to_tensor(samples, dtype='float32')
+        if not isinstance(targets, paddle.Tensor):
+            targets = paddle.to_tensor(targets, dtype='int64')
         
         if mixup_fn:
             samples, targets = mixup_fn(samples, targets)
@@ -81,7 +84,7 @@ def train_one_epoch(
         loss_value = loss.item()
         loss /= accum_iter
         
-        loss_scaler(loss, optimizer, clip_grad=max_norm, parameters=model.parameters(), create_graph=False,
+        loss_scaler(loss, optimizer, clip_grad=max_norm, parameters=model.parameters(),
                     update_grad=(data_iter_step + 1) % accum_iter == 0)
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.clear_grad()
@@ -123,10 +126,14 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
     model.eval()
     true_onehot, pred_onehot, true_labels, pred_labels, pred_softmax = [], [], [], [], []
     
-    for batch in metric_logger.log_every(data_loader, 10, f'{mode}:'):
-        images = paddle.to_tensor(batch[0]) if not isinstance(batch[0], paddle.Tensor) else batch[0]
-        target = paddle.to_tensor(batch[-1]) if not isinstance(batch[-1], paddle.Tensor) else batch[-1]
-        target_onehot = F.one_hot(target.cast('int64'), num_classes=num_class)
+    for (images, target) in metric_logger.log_every(data_loader, 10, f'{mode}:'):
+        # 确保数据是tensor格式
+        if not isinstance(images, paddle.Tensor):
+            images = paddle.to_tensor(images, dtype='float32')
+        if not isinstance(target, paddle.Tensor):
+            target = paddle.to_tensor(target, dtype='int64')
+            
+        target_onehot = F.one_hot(target, num_classes=num_class)
         
         with paddle.amp.auto_cast():
             output = model(images)
@@ -186,7 +193,7 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
     print(f'{mode} Results - Accuracy: {accuracy_value:.4f}, F1-Macro: {f1_macro:.4f}, AUC-Macro: {auc_macro:.4f}')
     
     metric_logger.synchronize_between_processes()
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, accuracy_value
 
 
 def accuracy(output, target, topk=(1,)):

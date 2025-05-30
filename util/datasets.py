@@ -5,15 +5,87 @@
 
 import os
 import paddle
-from paddle.vision import transforms, datasets
+from paddle.vision import transforms
 from paddle.vision.transforms import Compose
+from paddle.io import Dataset
 import numpy as np
+from PIL import Image
+
+
+class ImageFolderDataset(Dataset):
+    """自定义的图像文件夹数据集，确保与ImageFolder格式兼容"""
+    
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.samples = []
+        self.class_names = []
+        self.class_to_idx = {}
+        
+        # 扫描目录结构
+        self._make_dataset()
+        
+    def _make_dataset(self):
+        """扫描目录并创建样本列表"""
+        if not os.path.isdir(self.root_dir):
+            raise ValueError(f"目录不存在: {self.root_dir}")
+            
+        # 获取所有类别文件夹
+        class_names = [d for d in os.listdir(self.root_dir) 
+                      if os.path.isdir(os.path.join(self.root_dir, d))]
+        class_names.sort()  # 确保顺序一致
+        
+        self.class_names = class_names
+        self.class_to_idx = {cls_name: idx for idx, cls_name in enumerate(class_names)}
+        
+        # 扫描每个类别文件夹中的图像
+        for class_name in class_names:
+            class_dir = os.path.join(self.root_dir, class_name)
+            class_idx = self.class_to_idx[class_name]
+            
+            for filename in os.listdir(class_dir):
+                if self._is_image_file(filename):
+                    img_path = os.path.join(class_dir, filename)
+                    self.samples.append((img_path, class_idx))
+        
+        print(f"数据集加载完成: {len(self.samples)} 个样本, {len(self.class_names)} 个类别")
+        print(f"类别映射: {self.class_to_idx}")
+        
+    def _is_image_file(self, filename):
+        """判断是否为图像文件"""
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
+        return any(filename.lower().endswith(ext) for ext in image_extensions)
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        img_path, class_idx = self.samples[idx]
+        
+        # 加载图像
+        try:
+            with open(img_path, 'rb') as f:
+                img = Image.open(f).convert('RGB')
+        except Exception as e:
+            print(f"加载图像失败: {img_path}, 错误: {e}")
+            # 返回一个空白图像作为fallback
+            img = Image.new('RGB', (224, 224), (0, 0, 0))
+        
+        # 应用变换
+        if self.transform is not None:
+            img = self.transform(img)
+        
+        return img, class_idx
 
 
 def build_dataset(is_train, args):
     transform = build_transform(is_train, args)
     root = os.path.join(args.data_path, is_train)
-    dataset = datasets.ImageFolder(root, transform=transform)
+    
+    # 使用自定义的ImageFolderDataset
+    dataset = ImageFolderDataset(root, transform=transform)
+    
+    print(f"构建 {is_train} 数据集: {len(dataset)} 个样本")
     return dataset
 
 

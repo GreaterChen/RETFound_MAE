@@ -210,40 +210,6 @@ def test_model_inference(model):
     print("✅ 模型推理测试通过！")
 
 
-def manual_weight_conversion_example():
-    """手动权重转换示例"""
-    print("\n=== 手动权重转换示例 ===")
-    
-    # PyTorch权重文件路径
-    pytorch_model_path = "path/to/pytorch_model.pth"
-    paddle_model_path = "converted_retfound_paddle.pdparams"
-    
-    if not os.path.exists(pytorch_model_path):
-        print(f"PyTorch权重文件不存在: {pytorch_model_path}")
-        return False
-    
-    # 转换权重
-    print("开始转换PyTorch权重...")
-    success = convert_retfound_weights(pytorch_model_path, paddle_model_path)
-    
-    if success:
-        print(f"✅ 权重转换成功，保存至: {paddle_model_path}")
-        
-        # 加载到模型
-        model = RETFound_mae(num_classes=1000)
-        load_success = load_converted_weights_to_model(model, paddle_model_path, strict=False)
-        
-        if load_success:
-            print("✅ 权重加载到模型成功！")
-            return True
-        else:
-            print("❌ 权重加载到模型失败")
-            return False
-    else:
-        print("❌ 权重转换失败")
-        return False
-
-
 def parse_arguments():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='RETFound PyTorch权重转换和加载工具')
@@ -275,10 +241,10 @@ def parse_arguments():
                         help='Test model inference after loading')
     parser.add_argument('--validation_samples', default=5, type=int,
                         help='Number of samples for validation testing')
-    parser.add_argument('--save_paddle_model', action='store_true', default=True,
-                        help='Save converted model in PaddlePaddle format')
-    parser.add_argument('--paddle_model_path', default="retfound_mae_paddle.pdparams", type=str,
-                        help='Path to save PaddlePaddle model')
+    parser.add_argument('--save_paddle_model', action='store_true', default=False,
+                        help='Save converted model in PaddlePaddle format (default: False, since model.load_pytorch_weights already saves converted weights)')
+    parser.add_argument('--paddle_model_path', default=None, type=str,
+                        help='Path to save PaddlePaddle model (default: auto-generated based on input filename)')
     
     # 设备参数
     parser.add_argument('--device', default='auto', choices=['auto', 'gpu', 'cpu'],
@@ -294,6 +260,12 @@ def main():
     
     print("RETFound PyTorch权重转换和加载示例")
     print("=" * 50)
+    print("📝 注意: 权重转换过程说明")
+    print("   1. model.load_pytorch_weights() 会自动转换并保存权重文件")
+    print("   2. 如果启用 --save_paddle_model，脚本会检查是否已存在文件，避免重复保存")
+    print("   3. 默认情况下只保存一份转换后的权重文件")
+    print("=" * 50)
+    print()
     
     # 显示当前模式信息
     if not args.use_huggingface:  # 本地模式
@@ -332,8 +304,16 @@ def main():
         
         # 保存PaddlePaddle格式的模型
         if args.save_paddle_model:
+            # 如果没有指定保存路径，则根据输入文件自动生成
+            if args.paddle_model_path is None:
+                if not args.use_huggingface and args.local_model_path:
+                    base_name = os.path.splitext(os.path.basename(args.local_model_path))[0]
+                    args.paddle_model_path = f"{base_name}_paddle.pdparams"
+                else:
+                    args.paddle_model_path = "retfound_mae_paddle.pdparams"
+            
             paddle.save(model.state_dict(), args.paddle_model_path)
-            print(f"\n💾 PaddlePaddle模型已保存至: {args.paddle_model_path}")
+            print(f"💾 PaddlePaddle模型已保存至: {args.paddle_model_path}")
         
     else:
         if not args.use_huggingface:

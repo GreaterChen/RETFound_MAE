@@ -97,10 +97,13 @@ class DropPath(nn.Layer):
         if self.drop_prob == 0. or not self.training:
             return x
         keep_prob = 1 - self.drop_prob
-        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
         random_tensor = keep_prob + paddle.rand(shape, dtype=x.dtype)
-        random_tensor.floor_()
-        output = x.divide(keep_prob) * random_tensor
+        random_tensor = paddle.floor(random_tensor)  # binarize
+        
+        # 确保keep_prob是tensor
+        keep_prob_tensor = paddle.to_tensor(keep_prob, dtype=x.dtype)
+        output = x.divide(keep_prob_tensor) * random_tensor
         return output
 
 
