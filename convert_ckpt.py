@@ -120,7 +120,7 @@ def load_retfound_mae_example(args):
     print("=== RETFound MAE 模型加载示例 ===")
     
     # 1. 创建PaddlePaddle模型
-    model = RETFound_mae(num_classes=1000)
+    model = RETFound_mae(num_classes=5)
     print(f"创建 RETFound MAE 模型，参数量: {sum(p.numel() for p in model.parameters())}")
     
     # 2. 选择权重来源

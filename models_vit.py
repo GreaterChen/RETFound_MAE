@@ -250,8 +250,11 @@ class VisionTransformer(nn.Layer):
 
 def RETFound_mae(num_classes=1000, **kwargs):
     """RETFound MAE模型（与HuggingFace模型兼容）"""
+    # 设置默认的img_size，但如果kwargs中有，则使用kwargs中的值
+    img_size = kwargs.pop('img_size', 224)
+    
     model = VisionTransformer(
-        img_size=224,
+        img_size=img_size,
         patch_size=16, 
         embed_dim=1024, 
         depth=24, 

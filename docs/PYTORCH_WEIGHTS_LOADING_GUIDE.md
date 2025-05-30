@@ -2,18 +2,20 @@
 
 ## 概述
 
-本指南详细说明了如何将RETFound项目的PyTorch预训练权重转换并加载到PaddlePaddle模型中。我们的实现确保了与原始PyTorch模型的完全兼容性。
+本指南详细说明了如何将RETFound项目的PyTorch预训练权重转换并加载到PaddlePaddle模型中。我们提供了完整的转换工具和示例脚本，确保与原始PyTorch模型的完全兼容性。
 
 ## 关键特性
 
 ✅ **完全兼容** - 模型架构与PyTorch版本完全一致  
-✅ **自动转换** - 内置权重转换工具  
-✅ **HuggingFace支持** - 直接从HuggingFace Hub加载  
-✅ **验证工具** - 确保转换准确性的测试工具  
+✅ **自动转换** - 内置权重转换工具，自动处理维度差异  
+✅ **HuggingFace支持** - 直接从HuggingFace Hub下载和转换  
+✅ **镜像站支持** - 支持HF镜像站，解决国内访问问题  
+✅ **便捷接口** - 一行代码完成权重加载  
+✅ **验证工具** - 内置模型推理测试
 
 ## 快速开始
 
-### 1. 基本用法
+### 1. 最简单的使用方法
 
 ```python
 import paddle
@@ -22,314 +24,531 @@ from models_vit import RETFound_mae
 # 创建模型
 model = RETFound_mae(num_classes=1000)
 
-# 从PyTorch权重文件加载
+# 一行代码加载PyTorch权重（自动转换）
 model.load_pytorch_weights("path/to/pytorch_retfound_mae.pth")
 
-# 或从HuggingFace Hub加载
-model.load_pytorch_weights("ycxia/RETFound_MAE")  # 自动下载
+# 模型即可使用
+model.eval()
+with paddle.no_grad():
+    output = model(paddle.randn([1, 3, 224, 224]))
 ```
 
-### 2. 完整示例
+### 2. 使用示例脚本
 
-```python
-# 运行完整的示例脚本
-python load_pytorch_weights_example.py
+```bash
+# 使用本地PyTorch权重文件
+python convert_ckpt.py --use_local --local_model_path /path/to/model.pth --test_inference
+
+# 从HuggingFace Hub下载并转换
+python convert_ckpt.py --use_huggingface --model_name YukunZhou/RETFound_mae_meh --hf_endpoint https://hf-mirror.com
+
+# 使用HF Token访问私有仓库
+python convert_ckpt.py --use_huggingface --hf_token your_token_here --model_name private/model
 ```
 
 ## 支持的模型
 
-| 模型名称 | HuggingFace Hub | 架构参数 |
-|---------|----------------|----------|
-| RETFound_MAE | `ycxia/RETFound_MAE` | ViT-Large, 1024d, 24层 |
-| RETFound_DINOv2 | `ycxia/RETFound_cf_dinov2` | ViT-Large, 1024d, 24层, patch=14 |
+| 模型名称 | HuggingFace Hub | 架构参数 | 描述 |
+|---------|----------------|----------|------|
+| RETFound_MAE | `YukunZhou/RETFound_mae_meh` | ViT-Large, 1024d, 24层, patch=16 | MAE预训练的RETFound模型 |
+| RETFound_DINOv2 | `ycxia/RETFound_cf_dinov2` | ViT-Large, 1024d, 24层, patch=14 | DINOv2预训练的RETFound模型 |
 
-## 模型架构对比
+## 核心功能
 
-### 与PyTorch实现的一致性
+### 1. 自动权重转换 (`model.load_pytorch_weights()`)
 
-我们的PaddlePaddle实现确保了以下方面与PyTorch完全一致：
+```python
+from models_vit import RETFound_mae
 
-#### 1. 层级结构
-```
-VisionTransformer
-├── patch_embed (PatchEmbed)
-│   └── proj (Conv2D)
-├── cls_token (Parameter)
-├── pos_embed (Parameter) 
-├── blocks (LayerList)
-│   ├── norm1 (LayerNorm)
-│   ├── attn (Attention)
-│   │   ├── qkv (Linear)
-│   │   └── proj (Linear)
-│   ├── norm2 (LayerNorm)
-│   └── mlp (Mlp)
-│       ├── fc1 (Linear)
-│       └── fc2 (Linear)
-├── norm (LayerNorm)
-└── head (Linear)
+model = RETFound_mae(num_classes=5)  # 根据需要设置类别数
+
+# 方法会自动完成以下步骤：
+# 1. 加载PyTorch权重文件
+# 2. 转换权重格式（处理维度差异）
+# 3. 保存为PaddlePaddle格式
+# 4. 加载到当前模型
+success = model.load_pytorch_weights("/path/to/pytorch_model.pth")
 ```
 
-#### 2. 参数命名映射
+### 2. 完整转换脚本 (`convert_ckpt.py`)
 
-| PyTorch | PaddlePaddle | 转换说明 |
-|---------|-------------|----------|
-| `patch_embed.proj.weight` | `patch_embed.proj.weight` | 自动转置维度 |
-| `blocks.0.attn.qkv.weight` | `blocks.0.attn.qkv.weight` | 线性层权重转置 |
-| `cls_token` | `cls_token` | 直接复制 |
-| `pos_embed` | `pos_embed` | 直接复制 |
-| `norm.weight/bias` | `norm.weight/bias` | 直接复制 |
+#### 2.1 本地文件模式
 
-#### 3. 关键差异处理
+```bash
+# 基本用法
+python convert_ckpt.py \
+    --use_local \
+    --local_model_path "/home/chenlb24/RETFound_MAE/RETFound_mae_meh.pth" \
+    --test_inference
 
-**线性层权重**
-- PyTorch: `[out_features, in_features]`
-- PaddlePaddle: `[in_features, out_features]`
-- 解决方案: 自动转置权重矩阵
+# 保存PaddlePaddle格式模型
+python convert_ckpt.py \
+    --use_local \
+    --local_model_path "/path/to/model.pth" \
+    --save_paddle_model \
+    --paddle_model_path "my_retfound_paddle.pdparams"
+```
 
-**卷积层权重**
-- PyTorch: `[out_channels, in_channels, H, W]`  
-- PaddlePaddle: `[out_channels, in_channels, H, W]`
-- 解决方案: 维度顺序一致，直接复制
+#### 2.2 HuggingFace下载模式
 
-## 权重转换工具
+```bash
+# 使用默认镜像站
+python convert_ckpt.py \
+    --use_huggingface \
+    --model_name "YukunZhou/RETFound_mae_meh" \
+    --hf_endpoint "https://hf-mirror.com"
 
-### 核心转换函数
+# 使用Token访问私有仓库
+python convert_ckpt.py \
+    --use_huggingface \
+    --model_name "private/retfound_model" \
+    --hf_token "your_hf_token_here" \
+    --cache_dir "./models"
+```
+
+### 3. 权重转换工具 (`util/weight_converter.py`)
+
+#### 3.1 直接转换权重文件
 
 ```python
 from util.weight_converter import convert_retfound_weights
 
-# 转换PyTorch权重到PaddlePaddle格式
+# 转换权重文件
 success = convert_retfound_weights(
     pytorch_model_path="retfound_mae.pth",
     paddle_model_path="retfound_mae_paddle.pdparams"
 )
 ```
 
-### 自动处理的转换
-
-1. **权重矩阵转置** - 所有线性层权重
-2. **参数名称映射** - 自动匹配对应层
-3. **数据类型转换** - PyTorch tensor → PaddlePaddle tensor
-4. **设备处理** - 自动移动到正确设备
-
-## 验证和测试
-
-### 1. 权重加载验证
+#### 3.2 加载转换后的权重
 
 ```python
-# 检查权重是否正确加载
-def verify_weights_loading(model, pytorch_weights_path):
-    original_state = model.state_dict()
-    
-    # 加载PyTorch权重
-    model.load_pytorch_weights(pytorch_weights_path)
-    new_state = model.state_dict()
-    
-    # 检查权重变化
-    for name, param in new_state.items():
-        if name in original_state:
-            if not paddle.equal(param, original_state[name]):
-                print(f"✅ {name}: 权重已更新")
-            else:
-                print(f"⚠️  {name}: 权重未变化")
+from util.weight_converter import load_converted_weights_to_model
+
+# 加载已转换的权重到模型
+success = load_converted_weights_to_model(
+    model=model,
+    paddle_model_path="retfound_mae_paddle.pdparams",
+    strict=False  # 允许部分权重不匹配
+)
 ```
 
-### 2. 模型输出测试
+## 模型架构详情
+
+### PaddlePaddle实现与PyTorch的一致性
+
+我们的实现确保了以下关键组件与PyTorch完全一致：
+
+#### 1. Vision Transformer结构
 
 ```python
-# 测试模型推理
-def test_model_inference(model):
-    model.eval()
-    
-    # 创建测试输入
-    x = paddle.randn([1, 3, 224, 224])
-    
-    with paddle.no_grad():
-        # 测试分类输出
-        output = model(x)
-        print(f"分类输出形状: {output.shape}")  # [1, num_classes]
+VisionTransformer(
+    ├── patch_embed (PatchEmbed)          # 图像分块嵌入
+    │   └── proj (Conv2D)                 # 16x16或14x14卷积
+    ├── cls_token (Parameter)             # 分类令牌
+    ├── pos_embed (Parameter)             # 位置编码
+    ├── blocks (LayerList)                # Transformer块序列
+    │   ├── norm1 (LayerNorm)             # 注意力前归一化
+    │   ├── attn (Attention)              # 多头自注意力
+    │   │   ├── qkv (Linear)              # Q、K、V投影
+    │   │   └── proj (Linear)             # 输出投影
+    │   ├── norm2 (LayerNorm)             # MLP前归一化
+    │   └── mlp (Mlp)                     # 前馈网络
+    │       ├── fc1 (Linear)              # 第一个线性层
+    │       └── fc2 (Linear)              # 第二个线性层
+    ├── norm (LayerNorm)                  # 最终归一化
+    └── head (Linear)                     # 分类头
+)
+```
+
+#### 2. RETFound模型配置
+
+```python
+# RETFound MAE
+RETFound_mae = VisionTransformer(
+    img_size=224,
+    patch_size=16,
+    embed_dim=1024,    # ViT-Large配置
+    depth=24,          # 24层Transformer
+    num_heads=16,      # 16个注意力头
+    mlp_ratio=4,       # MLP隐藏层倍数
+    qkv_bias=True,     # QKV偏置
+    num_classes=1000   # 可调整
+)
+
+# RETFound DINOv2  
+RETFound_dinov2 = VisionTransformer(
+    img_size=224,
+    patch_size=14,     # DINOv2使用14x14 patch
+    embed_dim=1024,
+    depth=24,
+    num_heads=16,
+    mlp_ratio=4,
+    qkv_bias=True,
+    num_classes=1000
+)
+```
+
+## 权重转换技术细节
+
+### 1. 自动处理的转换
+
+我们的转换工具自动处理以下差异：
+
+#### 1.1 线性层权重转置
+
+```python
+# PyTorch Linear层权重形状: [out_features, in_features]
+# PaddlePaddle Linear层权重形状: [in_features, out_features]
+
+# 自动转置的权重类型
+transpose_weights = [
+    'qkv.weight',      # 注意力QKV投影
+    'proj.weight',     # 注意力输出投影
+    'fc1.weight',      # MLP第一层
+    'fc2.weight',      # MLP第二层
+    'head.weight'      # 分类头
+]
+```
+
+#### 1.2 权重名称映射
+
+```python
+# 权重名称保持一致，无需特殊映射
+pytorch_name -> paddle_name
+"patch_embed.proj.weight" -> "patch_embed.proj.weight"
+"blocks.0.attn.qkv.weight" -> "blocks.0.attn.qkv.weight"
+"cls_token" -> "cls_token"
+"pos_embed" -> "pos_embed"
+```
+
+#### 1.3 数据类型和设备处理
+
+```python
+# 自动转换PyTorch tensor为PaddlePaddle tensor
+pytorch_tensor = torch.load(...)
+paddle_tensor = paddle.to_tensor(pytorch_tensor.detach().cpu().numpy())
+```
+
+### 2. 转换过程
+
+```python
+class PyTorchToPaddleConverter:
+    def convert_state_dict(self, pytorch_state_dict):
+        paddle_state_dict = OrderedDict()
         
-        # 测试特征提取
-        features = model.forward_features(x)
-        print(f"特征输出形状: {features.shape}")  # [1, embed_dim]
+        for pytorch_name, pytorch_weight in pytorch_state_dict.items():
+            # 1. 转换权重名称（通常保持不变）
+            paddle_name = self.convert_weight_name(pytorch_name)
+            
+            # 2. 转换权重值（处理转置等）
+            paddle_weight = self.convert_weight_value(pytorch_name, pytorch_weight)
+            
+            paddle_state_dict[paddle_name] = paddle_weight
+            
+        return paddle_state_dict
 ```
 
-### 3. 数值精度验证
+## 使用示例
 
-如果同时有PyTorch和PaddlePaddle环境，可以进行数值对比：
+### 1. 基本使用
 
 ```python
-def compare_outputs(pytorch_model, paddle_model, input_data):
-    """比较两个模型的输出"""
-    import torch
+import paddle
+from models_vit import RETFound_mae
+
+# 创建模型
+model = RETFound_mae(num_classes=5)  # 5分类任务
+
+# 加载预训练权重
+model.load_pytorch_weights("/path/to/RETFound_mae_meh.pth")
+
+# 使用模型
+model.eval()
+input_tensor = paddle.randn([1, 3, 224, 224])
+
+with paddle.no_grad():
+    # 分类预测
+    logits = model(input_tensor)
+    print(f"分类输出: {logits.shape}")  # [1, 5]
     
-    # PyTorch推理
-    pytorch_model.eval()
-    with torch.no_grad():
-        torch_input = torch.from_numpy(input_data)
-        torch_output = pytorch_model(torch_input)
-    
-    # PaddlePaddle推理  
-    paddle_model.eval()
-    with paddle.no_grad():
-        paddle_input = paddle.to_tensor(input_data)
-        paddle_output = paddle_model(paddle_input)
-    
-    # 计算差异
-    diff = np.abs(torch_output.numpy() - paddle_output.numpy())
-    print(f"最大差异: {diff.max()}")
-    print(f"平均差异: {diff.mean()}")
+    # 特征提取
+    features = model.forward_features(input_tensor)
+    print(f"特征输出: {features.shape}")  # [1, 1024]
 ```
 
-## 常见问题与解决方案
+### 2. 完整训练流程
 
-### Q1: 权重加载失败
-
-**可能原因:**
-- PyTorch权重文件格式不支持
-- 模型架构不匹配
-- 权重文件损坏
-
-**解决方案:**
 ```python
-# 检查PyTorch权重文件
+import paddle
+import paddle.optimizer as optim
+from models_vit import RETFound_mae
+
+# 1. 创建模型并加载预训练权重
+model = RETFound_mae(num_classes=5)
+model.load_pytorch_weights("/path/to/RETFound_mae_meh.pth")
+
+# 2. 冻结部分层（可选）
+for param in model.patch_embed.parameters():
+    param.stop_gradient = True
+
+# 3. 设置优化器
+optimizer = optim.AdamW(
+    parameters=model.parameters(),
+    learning_rate=1e-4,
+    weight_decay=0.05
+)
+
+# 4. 训练
+model.train()
+for batch_idx, (data, target) in enumerate(train_loader):
+    optimizer.clear_grad()
+    
+    output = model(data)
+    loss = F.cross_entropy(output, target)
+    
+    loss.backward()
+    optimizer.step()
+```
+
+### 3. 特征提取
+
+```python
+# 使用RETFound作为特征提取器
+class RETFoundFeatureExtractor(paddle.nn.Layer):
+    def __init__(self, pretrained_path):
+        super().__init__()
+        self.backbone = RETFound_mae(num_classes=1000)
+        self.backbone.load_pytorch_weights(pretrained_path)
+        
+        # 移除分类头
+        self.backbone.head = paddle.nn.Identity()
+    
+    def forward(self, x):
+        return self.backbone.forward_features(x)
+
+# 使用
+feature_extractor = RETFoundFeatureExtractor("/path/to/weights.pth")
+features = feature_extractor(images)  # [B, 1024]
+```
+
+## 脚本参数详解
+
+### convert_ckpt.py 参数
+
+#### HuggingFace相关
+- `--hf_token`: HuggingFace访问令牌
+- `--hf_endpoint`: HF镜像站地址（默认：https://hf-mirror.com）
+- `--model_name`: HF模型仓库名称（默认：YukunZhou/RETFound_mae_meh）
+- `--cache_dir`: 模型缓存目录（默认：./models）
+
+#### 模式选择
+- `--use_huggingface`: 从HuggingFace下载模式
+- `--use_local`: 使用本地文件模式（默认）
+- `--local_model_path`: 本地PyTorch模型文件路径
+
+#### 功能选项
+- `--test_inference`: 测试模型推理（默认：True）
+- `--save_paddle_model`: 保存PaddlePaddle格式模型（默认：False）
+- `--paddle_model_path`: PaddlePaddle模型保存路径
+- `--max_retries`: 下载重试次数（默认：3）
+
+#### 设备设置
+- `--device`: 计算设备（auto/gpu/cpu，默认：auto）
+
+## 故障排除
+
+### 1. 权重加载失败
+
+#### 问题：模型权重加载失败
+
+```bash
+❌ 权重加载失败
+```
+
+**解决方案：**
+
+```python
+# 1. 检查PyTorch权重文件格式
 import torch
 checkpoint = torch.load("model.pth", map_location='cpu')
-print(f"权重文件包含的键: {checkpoint.keys()}")
+print(f"权重文件键: {list(checkpoint.keys())}")
 
-# 如果是完整的checkpoint
+# 2. 检查权重结构
 if 'model' in checkpoint:
     weights = checkpoint['model']
 elif 'state_dict' in checkpoint:
     weights = checkpoint['state_dict']
 else:
     weights = checkpoint
+    
+print(f"权重参数数量: {len(weights)}")
 ```
 
-### Q2: 维度不匹配
+### 2. HuggingFace下载失败
 
-**可能原因:**
-- 模型配置参数不一致
-- 分类头大小不匹配
+#### 问题：网络连接或认证失败
 
-**解决方案:**
+```bash
+❌ HuggingFace模型下载/加载失败
+```
+
+**解决方案：**
+
+```bash
+# 1. 使用镜像站
+export HF_ENDPOINT=https://hf-mirror.com
+python convert_ckpt.py --use_huggingface --hf_endpoint https://hf-mirror.com
+
+# 2. 设置代理（如果需要）
+export HTTP_PROXY=http://proxy:port
+export HTTPS_PROXY=http://proxy:port
+
+# 3. 检查网络连接
+curl -I https://hf-mirror.com
+
+# 4. 手动下载后使用本地模式
+wget https://hf-mirror.com/YukunZhou/RETFound_mae_meh/pytorch_model.bin
+python convert_ckpt.py --use_local --local_model_path pytorch_model.bin
+```
+
+### 3. 维度不匹配
+
+#### 问题：模型参数维度不匹配
+
+```bash
+ValueError: Shape mismatch for parameter xxx
+```
+
+**解决方案：**
+
 ```python
-# 创建与PyTorch权重匹配的模型
+# 1. 检查模型配置
 model = RETFound_mae(
-    num_classes=1000,  # 确保与PyTorch模型一致
-    global_pool=False  # 检查全局池化设置
+    num_classes=1000,  # 确保与预训练模型一致
+    global_pool=False  # 检查池化方式
 )
+
+# 2. 查看权重形状
+paddle_weights = paddle.load("converted_weights.pdparams")
+model_state = model.state_dict()
+
+for name in model_state.keys():
+    if name in paddle_weights:
+        model_shape = model_state[name].shape
+        weight_shape = paddle_weights[name].shape
+        if model_shape != weight_shape:
+            print(f"不匹配: {name} - 模型:{model_shape}, 权重:{weight_shape}")
 ```
 
-### Q3: HuggingFace下载失败
+### 4. 内存不足
 
-**解决方案:**
-```python
-# 设置镜像源
-import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+#### 问题：转换过程中内存不足
 
-# 或手动下载
-from huggingface_hub import hf_hub_download
-model_file = hf_hub_download(
-    repo_id="ycxia/RETFound_MAE",
-    filename="pytorch_model.bin",
-    cache_dir="./models"
-)
-```
-
-## 性能优化建议
-
-### 1. 内存优化
+**解决方案：**
 
 ```python
-# 在转换过程中及时释放内存
 import gc
 import paddle
 
-def optimized_weight_loading(model, pytorch_path):
-    # 加载权重
-    model.load_pytorch_weights(pytorch_path)
-    
-    # 清理内存
+# 分步骤处理
+def memory_efficient_conversion(pytorch_path, paddle_path):
+    # 1. 转换权重
+    success = convert_retfound_weights(pytorch_path, paddle_path)
     gc.collect()
-    if paddle.device.is_compiled_with_cuda():
-        paddle.device.cuda.empty_cache()
+    
+    # 2. 加载到模型
+    if success:
+        model = RETFound_mae(num_classes=1000)
+        load_converted_weights_to_model(model, paddle_path, strict=False)
+        
+        # 清理内存
+        gc.collect()
+        if paddle.device.is_compiled_with_cuda():
+            paddle.device.cuda.empty_cache()
 ```
 
-### 2. 批量处理
+## 性能优化
+
+### 1. 批量转换
 
 ```python
-# 对于多个模型的批量转换
-models_to_convert = [
-    ("retfound_mae.pth", "retfound_mae_paddle.pdparams"),
-    ("retfound_dinov2.pth", "retfound_dinov2_paddle.pdparams")
+# 批量转换多个模型
+models_config = [
+    {
+        "pytorch_path": "retfound_mae.pth",
+        "paddle_path": "retfound_mae_paddle.pdparams",
+        "model_type": "mae"
+    },
+    {
+        "pytorch_path": "retfound_dinov2.pth", 
+        "paddle_path": "retfound_dinov2_paddle.pdparams",
+        "model_type": "dinov2"
+    }
 ]
 
-for pytorch_path, paddle_path in models_to_convert:
-    convert_retfound_weights(pytorch_path, paddle_path)
+for config in models_config:
+    print(f"转换 {config['model_type']} 模型...")
+    convert_retfound_weights(config["pytorch_path"], config["paddle_path"])
 ```
 
-## 进阶用法
-
-### 1. 自定义权重映射
+### 2. 推理优化
 
 ```python
-# 如果需要自定义权重名称映射
-from util.weight_converter import PyTorchToPaddleConverter
-
-converter = PyTorchToPaddleConverter()
-# 添加自定义映射规则
-converter.add_mapping_rule(
-    pytorch_pattern=r"custom_layer\.(\d+)\.weight",
-    paddle_pattern=r"custom_layer.\1.weight"
-)
-```
-
-### 2. 部分权重加载
-
-```python
-# 只加载部分权重（如backbone）
-def load_backbone_only(model, pytorch_path):
-    from util.weight_converter import convert_retfound_weights_partial
+# 优化推理性能
+@paddle.no_grad()
+def optimized_inference(model, images):
+    model.eval()
     
-    # 指定要转换的层
-    layers_to_convert = [
-        "patch_embed",
-        "cls_token", 
-        "pos_embed",
-        "blocks"
-    ]
+    # 批量处理
+    batch_size = 32
+    results = []
     
-    convert_retfound_weights_partial(
-        pytorch_path, 
-        "backbone_only.pdparams",
-        include_layers=layers_to_convert
-    )
+    for i in range(0, len(images), batch_size):
+        batch = images[i:i+batch_size]
+        output = model(batch)
+        results.append(output)
     
-    model.set_state_dict(paddle.load("backbone_only.pdparams"), strict=False)
+    return paddle.concat(results, axis=0)
 ```
 
 ## 验证清单
 
-在使用转换后的权重前，请确保：
+使用转换后的权重前，请确认：
 
-- [ ] 模型架构参数与原始PyTorch模型一致
-- [ ] 权重文件成功转换且无错误信息
+- [ ] PyTorch权重文件存在且格式正确
+- [ ] 模型配置参数与原始PyTorch模型一致
+- [ ] 权重转换过程无错误信息
 - [ ] 模型能够正常进行前向传播
 - [ ] 输出维度符合预期
-- [ ] 如有条件，数值精度在可接受范围内
+- [ ] 推理测试通过（如果启用）
+
+## 环境要求
+
+```bash
+# 必需依赖
+pip install paddlepaddle-gpu  # 或 paddlepaddle
+pip install numpy
+
+# HuggingFace功能（可选）
+pip install huggingface_hub
+pip install torch  # 仅用于加载PyTorch权重
+
+# 其他工具（可选）
+pip install tqdm  # 进度条
+```
 
 ## 技术支持
 
-如果遇到问题，请检查：
+如果遇到问题，请按以下步骤检查：
 
-1. **环境依赖** - 确保安装了所需的包
-2. **文件路径** - 检查权重文件路径是否正确
-3. **模型配置** - 验证模型参数与PyTorch版本一致
-4. **日志信息** - 查看详细的错误日志
+1. **环境依赖** - 确保安装所需包
+2. **文件路径** - 检查权重文件路径
+3. **模型配置** - 验证模型参数一致性
+4. **网络连接** - 检查HuggingFace访问
+5. **日志信息** - 查看详细错误日志
 
-更多技术细节请参考：
-- `util/weight_converter.py` - 权重转换实现
-- `models_vit.py` - 模型架构实现
-- `load_pytorch_weights_example.py` - 使用示例 
+相关文件：
+- `convert_ckpt.py` - 主要转换脚本
+- `util/weight_converter.py` - 权重转换工具
+- `models_vit.py` - 模型架构实现 

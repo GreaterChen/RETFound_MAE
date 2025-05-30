@@ -29,14 +29,14 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
-    parser.add_argument('--batch_size', default=32, type=int,
+    parser.add_argument('--batch_size', default=64, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
     parser.add_argument('--epochs', default=50, type=int)
     parser.add_argument('--accum_iter', default=1, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
 
     # Model parameters
-    parser.add_argument('--model', default='vit_large_patch16', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='RETFound_mae', type=str, metavar='MODEL',
                         help='Name of model to train')
     parser.add_argument('--input_size', default=224, type=int,
                         help='images input size')
@@ -106,9 +106,9 @@ def get_args_parser():
                         help='dataset path')
     parser.add_argument('--nb_classes', default=5, type=int,
                         help='number of the classification types')
-    parser.add_argument('--output_dir', default='./output_dir',
+    parser.add_argument('--output_dir', default='./output_dir/APTOS2019',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='./output_logs',
+    parser.add_argument('--log_dir', default='./output_logs/APTOS2019',
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='gpu',
                         help='device to use for training / testing')
@@ -137,7 +137,7 @@ def get_args_parser():
 def main(args, criterion):
     if args.resume and not args.eval:
         resume = args.resume
-        checkpoint = paddle.load(args.resume, map_location='cpu')
+        checkpoint = paddle.load(args.resume)
         print("Load checkpoint from: %s" % args.resume)
         args = checkpoint['args']
         args.resume = resume
@@ -196,7 +196,7 @@ def main(args, criterion):
         print(f"Loading result: {msg}")
 
         # 重新初始化分类头
-        paddle.nn.initializer.Normal(model.head.weight, std=2e-5)
+        # paddle.nn.initializer.Normal(model.head.weight, std=2e-5)
 
     dataset_train = build_dataset(is_train='train', args=args)
     dataset_val = build_dataset(is_train='val', args=args)
@@ -245,7 +245,7 @@ def main(args, criterion):
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     if args.resume and args.eval:
-        checkpoint = paddle.load(args.resume, map_location='cpu')
+        checkpoint = paddle.load(args.resume)
         print("Load checkpoint from: %s" % args.resume)
         model.set_state_dict(checkpoint['model'])
 
@@ -306,13 +306,14 @@ def main(args, criterion):
             if args.output_dir and args.savemodel:
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                    loss_scaler=loss_scaler, epoch=epoch)
+                    loss_scaler=loss_scaler, epoch=epoch, mode='best')
         print("Best epoch = %d, Best score = %.4f" % (best_epoch, max_score))
 
 
         if epoch == (args.epochs - 1):
-            checkpoint = paddle.load(os.path.join(args.output_dir, args.task, 'checkpoint-best.pth'), map_location='cpu')
-            model_without_ddp.set_state_dict(checkpoint['model'], strict=False)
+            checkpoint_path = os.path.join(args.output_dir, args.task, 'checkpoint-best.pth') if args.task else os.path.join(args.output_dir, 'checkpoint-best.pth')
+            checkpoint = paddle.load(checkpoint_path)
+            model_without_ddp.set_state_dict(checkpoint['model'])
             model.to(device)
             print("Test with the best model, epoch = %d:" % checkpoint['epoch'])
             test_stats, auc_roc = evaluate(data_loader_test, model, device, args, -1, mode='test',

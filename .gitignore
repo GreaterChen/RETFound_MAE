@@ -140,3 +140,4 @@ runs/
 output_dir/
 output_logs/
 data/
+*.zip

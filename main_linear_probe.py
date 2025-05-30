@@ -147,7 +147,7 @@ def get_args_parser():
 def main(args, criterion):
     if args.resume and not args.eval:
         resume = args.resume
-        checkpoint = paddle.load(args.resume, map_location='cpu')
+        checkpoint = paddle.load(args.resume)
         print("Load checkpoint from: %s" % args.resume)
         args = checkpoint['args']
         args.resume = resume
@@ -187,7 +187,7 @@ def main(args, criterion):
             filename=f'{args.finetune}.pth',
         )
         
-        checkpoint = paddle.load(checkpoint_path, map_location='cpu')
+        checkpoint = paddle.load(checkpoint_path)
         print("Load pre-trained checkpoint from: %s" % args.finetune)
         
         if args.model!='RETFound_mae':
@@ -292,7 +292,7 @@ def main(args, criterion):
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     if args.resume and args.eval:
-        checkpoint = paddle.load(args.resume, map_location='cpu')
+        checkpoint = paddle.load(args.resume)
         print("Load checkpoint from: %s" % args.resume)
         model.set_state_dict(checkpoint['model'])
 
@@ -365,7 +365,7 @@ def main(args, criterion):
 
 
         if epoch == (args.epochs - 1):
-            checkpoint = paddle.load(os.path.join(args.output_dir, args.task, 'checkpoint-best.pth'), map_location='cpu')
+            checkpoint = paddle.load(os.path.join(args.output_dir, args.task, 'checkpoint-best.pth'))
             model_without_ddp.set_state_dict(checkpoint['model'], strict=False)
             model.to(device)
             print("Test with the best model, epoch = %d:" % checkpoint['epoch'])
