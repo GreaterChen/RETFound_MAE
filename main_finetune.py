@@ -92,7 +92,7 @@ def get_args_parser():
                         help='How to apply mixup/cutmix params. Per "batch", "pair", or "elem"')
 
     # * Finetuning params
-    parser.add_argument('--finetune', default='/home/chenlb24/RETFound_MAE/RETFound_mae_meh_paddle.pdparams', type=str,
+    parser.add_argument('--finetune', default='/home/chenlb24/RETFound_MAE/RETFound_mae_natureCFP_paddle.pdparams', type=str,
                         help='finetune from checkpoint')
     parser.add_argument('--task', default='', type=str,
                         help='finetune from checkpoint')
@@ -102,13 +102,13 @@ def get_args_parser():
                         help='Use class token instead of global pool for classification')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='/home/chenlb24/RETFound_MAE/data/APTOS2019', type=str,
+    parser.add_argument('--data_path', default='/home/chenlb24/RETFound_MAE/data/MESSIDOR2', type=str,
                         help='dataset path')
     parser.add_argument('--nb_classes', default=5, type=int,
                         help='number of the classification types')
-    parser.add_argument('--output_dir', default='./output_dir/APTOS2019',
+    parser.add_argument('--output_dir', default='./output_dir/natureCFP/MESSIDOR2',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='./output_logs/APTOS2019',
+    parser.add_argument('--log_dir', default='./output_logs/natureCFP_MESSIDOR2',
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='gpu',
                         help='device to use for training / testing')

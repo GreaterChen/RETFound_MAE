@@ -221,11 +221,11 @@ def parse_arguments():
                         help='Hugging Face endpoint URL (use https://hf-mirror.com for China mirror)')
     
     # 模型相关参数
-    parser.add_argument('--model_name', default="YukunZhou/RETFound_mae_meh", type=str,
+    parser.add_argument('--model_name', default="YukunZhou/RETFound_mae_natureCFP", type=str,
                         help='HuggingFace model repository name')
     parser.add_argument('--cache_dir', default="./models", type=str,
                         help='Directory to cache downloaded models')
-    parser.add_argument('--local_model_path', type=str, default="/home/chenlb24/RETFound_MAE/RETFound_mae_meh.pth",
+    parser.add_argument('--local_model_path', type=str, default="/home/chenlb24/RETFound_MAE/RETFound_mae_natureCFP.pth",
                         help='Path to local PyTorch model file')
     
     # 下载和处理参数
